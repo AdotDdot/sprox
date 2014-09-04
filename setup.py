@@ -20,8 +20,8 @@ import os
 import shutil
 from sys import argv
 
-serial = int(argv[1]) if len(argv) > 1 else 1
-localcert = argv[2] if len(argv) > 2 else "/etc/ssl/certs/ca-certificates.crt"
+localcert = argv[1] if len(argv) > 1 else "/etc/ssl/certs/ca-certificates.crt"
+serial = int(argv[2]) if len(argv) > 2 else 1
 
 #make files directory
 files_dir = 'sproxy_files'
