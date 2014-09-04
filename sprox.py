@@ -20,6 +20,7 @@ import sys
 import threading
 import ssl
 import os
+import re
 import time
 import urwid
 import urlparse
@@ -27,11 +28,10 @@ from OpenSSL import crypto
 from codict import COD as HeaderDict
 
 class Proxy:
-	def __init__(self, serv_port = 50007):
+	def __init__(self, serv_port):
 		self.serv_host = ''
 		self.serv_port = serv_port
 		self.max_listen = 300
-		self.blacklist = []
 		self.browser_timeout = 1
 		self.web_timeout = 1
 		self.buffer_size = 4096
@@ -41,62 +41,21 @@ class Proxy:
 		self._init_localcert()
                 self.mainscreen_queue = []
                 self.eventlog_queue = []
+		self.intercepted_queue = []
                 self.output_mode = 'b'
+		self.interception_pattern = None
 
-        def out(self, content):
-                self.mainscreen_queue.append(content)
 
-	def modify_reqs(self, request):
+	def modify_all(self, request):
+		'''Override to apply changes to every request'''
 		pass
 
-        def parse_response(self, response, host):
+	def parse_response(self, response, host):
+		'''Override to handle received response - best used with concurrency'''
                 pass
 
-	def on_response(self, request, response, host, https = False):
-                self.output_flow(request, response, host, https)
-                self.parse_response(response, host)
-
-        def output_flow(self, request, response, host, https):
-                #url to display
-                url = 'https://'+host+request.url if https else request.url
-                #set palette attr for request method
-                if request.method == 'GET':
-                        metcol = 'bblue'
-                elif request.method == 'POST':
-                        metcol = 'byellow'
-                else:
-                        metcol = 'err'
-                #set palette attr for response code
-                if response.status[0] == '2':
-                        statcol = 'pgreen'
-                elif response.status[0] == '3':
-                        statcol = 'pcyan'
-                elif response.status[0] == '4':
-                        statcol = 'pred'
-                elif response.status[0] == '5':
-                        statcol = 'pyellow'
-                else:
-                        statcol = 'pmagenta'
-                if self.output_mode == 'b':
-                        clength = response.headers['Content-Length']+' bytes' if 'Content-Length' in response.headers else ''
-		        ctype = response.headers['Content-Type'] if 'Content-Type' in response.headers else ''
-                        out = ['\n', (metcol, request.method), ' ', url, ' ', request.protov, '\n    ',
-                                response.protov, ' ', (statcol, '%s %s'%(response.status, response.status_text)), ' %s %s'%(clength, ctype)]
-                        #outresp = ('body', '    %s  %s  %s'%(response.first_line, clength, ctype))
-                elif self.output_mode == 'f':
-                        out = ['\n\n', (metcol, request.method), ' ', url, ' ', request.protov, request.head.replace(request.first_line, '')]
-                        if request.method == 'POST':
-                                if 'Content-Type' in request.headers and 'application/x-www-form-urlencoded' in request.headers['Content-Type']:
-                                        out.append(('pyellow', '\n'.join(['\nUrl-encoded form:']+[': '.join(t) for t in urlparse.parse_qsl(request.body.strip('\n'))])))
-                                else: 
-                                        out.append(('pyellow', '\nPost data:\n%s'%request.body))
-
-                        out.append(('body', '\n\n'+response.head.replace('\r', '\n').replace('\n\n', '\n')))
-                self.stdout_lock.acquire()
-                self.out(out)
-                self.stdout_lock.release()
-		
 	def start(self):
+		'''Start the proxy server'''
 		try:
 			serv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 			serv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -104,7 +63,7 @@ class Proxy:
 			serv_sock.listen(self.max_listen)
 			cname = serv_sock.getsockname()
                         time.sleep(0.5)
-			self.out(('body', '\nProxy running on port %d - listening'%self.serv_port))
+			self.mainscreen_queue.append(('body', '\nProxy running on port %d - listening'%self.serv_port))
 		except socket.error, (value, message):
 			self._log(cname, ('err', 'Could not open server socket: error %d %s'%(value,message)))
 			sys.exit(1)
@@ -122,12 +81,13 @@ class Proxy:
 				self._certfactory.cleanup()
 				serv_sock.close()
 				exit(0)
-	
+
 	def _init_localcert(self):
 		with open(os.path.join('sproxy_files', 'localcerts.txt'), 'rt') as loc:
 			self.certfile = loc.read()
 
 	def _handle_conn(self, conn):	
+		#get request from browser
 		conn.settimeout(self.browser_timeout)
                 cname = conn.getsockname()
 		request = self._recv_pipe('browser', conn)	
@@ -137,17 +97,12 @@ class Proxy:
 			sys.exit(1)	
 		#process request to allow for user changes
 		request_obj = HTTPRequest(request)
-		self.modify_reqs(request_obj)
+		self._handle_reqs(request_obj)
 		request = request_obj.make_raw()
 		tunneling = request_obj.method == 'CONNECT'
 		http_port = 443 if tunneling else 80
 		http_host = request_obj.headers['Host']
-		self._log(cname, 'got host %s, port %d'%(http_host, http_port))
-		#check blacklist
-		if http_host in self.blacklist:
-			self._log(cname, 'host in blacklist: closing connection')
-			conn.close()
-			sys.exit(1) 		
+		self._log(cname, 'got host %s, port %d'%(http_host, http_port))		
 		#get and send response
 		if tunneling: self._get_https_resp(http_host, http_port, conn)
 		else: 
@@ -192,14 +147,14 @@ class Proxy:
 			conn.close()	
 			sys.exit(1)	
 		request_obj = HTTPRequest(request)
-		self.modify_reqs(request_obj)
+		self._handle_reqs(request_obj)
 		request = request_obj.make_raw()
 		wclient.send(request)
 		try: 
 			response = self._recv_pipe(host, wclient, conn)
 			if response: 
 				response_obj = HTTPResponse(response)
-				self.on_response(request_obj, response_obj, host, https = True)
+				self._handle_response(request_obj, response_obj, host, https = True)
 		except ssl.SSLError, m: self._log(cname, '%s'%m) #watch
 		except socket.error, (v, m): self._log(cname, host+ ' - Error '+str(v)+' '+m) #watch
 		finally:
@@ -230,7 +185,7 @@ class Proxy:
 		response = self._recv_pipe(host, wclient, conn)
 		if response:
 			response_obj = HTTPResponse(response)
-			self.on_response(req_obj, response_obj, host)					
+			self._handle_response(req_obj, response_obj, host)					
 		wclient.close()
 		self._log(cname, 'connection to client and connection to host %s closed'%host)
 
@@ -268,18 +223,74 @@ class Proxy:
 		return b''.join(msg)
 
 	def _log(self, cname, content):
-                self.eventlog_queue.append(['%f  '%time.time(), ('[%s %d]'%cname).ljust(25), content])                             
-                '''
-                        self.stdout_lock.acquire()
-                        self.out(('pgrey', ' '.join([str(arg) for arg in args])))
-                        self.stdout_lock.release()'''
+                self.eventlog_queue.append(['%f  '%time.time(), ('[%s %d]'%cname).ljust(25), content]) 
 
+	def _matches_interception_pattern(self, firstline):
+		'''Check if request matches intercepting pattern'''
+		return False #TODO still not implemented
 
+	def _handle_reqs(self, request):
+		'''Apply changes to incoming requests'''
+		#apply permanent changes
+		self.modify_all(request)
+		#block requests that match interception pattern to allow user changes
+		if self._matches_interception_pattern(request.first_line):
+			request.on_hold = True
+			self.intercepted_queue.append(request)
+		while request.on_hold: #TODO 
+			time.sleep(1)
+		       
+	def _handle_response(self, request, response, host, https = False):
+		'''After response has been received'''
+                self._output_flow(request, response, host, https)
+                self.parse_response(response, host)
 
+        def _output_flow(self, request, response, host, https):
+		'''Output request and response'''
+                #url to display
+                url = 'https://'+host+request.url if https else request.url
+                #set palette attr for request method
+                if request.method == 'GET':
+                        metcol = 'bblue'
+                elif request.method == 'POST':
+                        metcol = 'byellow'
+                else:
+                        metcol = 'err'
+                #set palette attr for response code
+                if response.status[0] == '2':
+                        statcol = 'pgreen'
+                elif response.status[0] == '3':
+                        statcol = 'pcyan'
+                elif response.status[0] == '4':
+                        statcol = 'err'
+                elif response.status[0] == '5':
+                        statcol = 'pyellow'
+                else:
+                        statcol = 'pmagenta'
+		#output in basic mode
+                if self.output_mode == 'b':
+                        clength = response.headers['Content-Length']+' bytes' if 'Content-Length' in response.headers else ''
+		        ctype = response.headers['Content-Type'] if 'Content-Type' in response.headers else ''
+                        out = ['\n', (metcol, request.method), ' ', url, ' ', request.protov, '\n    ',
+                                response.protov, ' ', (statcol, '%s %s'%(response.status, response.status_text)), ' %s %s'%(clength, ctype)]
+		#output in full mode
+                elif self.output_mode == 'f':
+                        out = ['\n\n', (metcol, request.method), ' ', url, ' ', request.protov, request.head.replace(request.first_line, '')]
+                        if request.method == 'POST':
+                                if 'Content-Type' in request.headers and 'application/x-www-form-urlencoded' in request.headers['Content-Type']:
+                                        out.append(('pyellow', '\n'.join(['\nUrl-encoded form:']+[': '.join(t) for t in urlparse.parse_qsl(request.body.strip('\n'))])))
+                                else: 
+                                        out.append(('pyellow', '\nPost data:\n%s'%request.body))
+                        out.append(('body', '\n\n'+response.head.replace('\r', '\n').replace('\n\n', '\n')))
+		#append to queue
+                self.stdout_lock.acquire() #TODO remove lock if unnecessary
+                self.mainscreen_queue.append(out)
+                self.stdout_lock.release()                            
 
 
 class HTTPRequest:
 	def __init__(self, raw_req):
+		self.on_hold = False
 		self.whole = raw_req.replace('\r', '\n').replace('\n\n', '\n')
 		self._set_parts()
 
@@ -295,10 +306,11 @@ class HTTPRequest:
 		self.head = '\n'.join([self.first_line, headers])
 		
 	def make_raw(self):
+		#put all parts back together
 		first_line = ' '.join([self.method, self.url, self.protov])
 		headers = '\r\n'.join([header+': '+self.headers[header] for header in self.headers])
 		head = '\r\n'.join([first_line, headers]) 
-		return '\r\n\r\n'.join([head, self.body]) #TODO head.encode?
+		return '\r\n\r\n'.join([head, self.body]) 
 
 
 class HTTPResponse:
@@ -360,12 +372,21 @@ class CertFactory:
 		return certfile, keyfile
 
 	def cleanup(self):
+		#update count of last serial number used
 		with open(self._sid, 'wt') as sid:
 			self._count_lock.acquire()
 			sid.write(str(self._count))
 			self._count_lock.release()
 
+################################################################ urwid - possibly make these into another file?
 
+class EEdit(urwid.Edit):
+	'''An Edit widget that emits a custom signal on enter'''
+	def keypress(self, size, key):
+		if key == 'enter': 
+			urwid.emit_signal(self, 'done')
+		urwid.Edit.keypress(self, size, key)
+	
 class Interface:
 	palette = [
 		('body', 'white', 'black'),
@@ -375,12 +396,9 @@ class Interface:
 		('ext', 'white', 'dark blue'),
 		('ext_hi', 'light cyan, bold', 'dark blue'),
                 ('pgreen', 'light green', 'black'),
-                #('pgreen', 'light green', 'black'),
                 ('bblue', 'light blue, bold', 'black'),
-                #('pblue', 'light blue', 'black'),
                 ('byellow', 'yellow, bold', 'black'),
                 ('pcyan', 'dark cyan', 'black'),
-                ('pred', 'light red', 'black'),
                 ('pyellow', 'yellow', 'black'),
                 ('pmagenta', 'dark magenta', 'black'),
                 ('err', 'light red', 'black'),
@@ -391,30 +409,30 @@ class Interface:
 		('ext_hi', 'UP'), ',', ('ext_hi', 'DOWN'), ':scroll        ',
                 ('ext_hi', 'b'), ',', ('ext_hi', 'f'), ':output mode        ',
                 ('ext_hi', 'l'), ':event log        ',
-                ('ext_hi', 'm'), ':main screen'
-                
+                ('ext_hi', 'm'), ':main screen'          
 		]
 
-	def __init__(self):
+	def __init__(self, serv_port):
 		self.header = urwid.AttrWrap(urwid.Text(self.header_text), 'ext')
-                self.footer = urwid.Text("  Output: basic")
+                self.footer = EEdit("  Current interception pattern: ")
 		self.flowWalker = urwid.SimpleListWalker([])
 		self.mscreen = urwid.ListBox(self.flowWalker)
                 self.logWalker = urwid.SimpleListWalker([])
                 self.eventlog = urwid.ListBox(self.logWalker)
+		self.reqEdit = urwid.WidgetPlaceholder(urwid.Filler(urwid.Text(('ext', ' No requests intercepted yet '), align='center'), 'middle'))
                 self.body = urwid.WidgetPlaceholder(self.mscreen)
 		self.view = urwid.Frame(
 			urwid.AttrWrap(self.body, 'body'),
 			header = self.header,
 			footer = urwid.AttrWrap(self.footer, 'ext'))
+		urwid.register_signal(EEdit, ['done'])
+		urwid.connect_signal(self.footer, 'done', self._on_pattern_set)
 		self.loop = urwid.MainLoop(self.view, self.palette, 
 			unhandled_input = self.unhandled_input)
-                self.proxy = Proxy()
-                self.proxy.debug = 0 #TEST
-
+                self.proxy = Proxy(serv_port)
 
 	def start(self):
-		t = threading.Thread(target = self.fill_screen)
+		t = threading.Thread(target = self._fill_screen)
 		t.daemon = 1
 		t2 = threading.Thread(target = self.proxy.start)
 		t2.daemon = 1
@@ -429,16 +447,19 @@ class Interface:
                 #set output preference		
                 elif k in ('B', 'b'):
                         self.proxy.output_mode = 'b'
-                        self.footer.set_text('  Output: basic')
+                        #self.footer.set_text('  Output: basic')
                 elif k in ('F', 'f'):
                         self.proxy.output_mode = 'f'
-                        self.footer.set_text('  Output: full')
+                        #self.footer.set_text('  Output: full')
                 elif k in ('l', 'L'):
                         self.body.original_widget = self.eventlog
                 elif k in ('m', 'M'):
                         self.body.original_widget = self.mscreen
+		elif k in ('r', 'R'):
+			self.body.original_widget = self.reqEdit
 
-	def fill_screen(self):	
+	def _fill_screen(self):	
+		#infinite loop - check every 0.5s if there is something to output
 		while 1:
 			if self.proxy.mainscreen_queue:
                                 for i in self.proxy.mainscreen_queue:
@@ -455,9 +476,14 @@ class Interface:
 					self.eventlog.set_focus(len(self.logWalker)-1, 'above')
 				except AssertionError: pass
                         time.sleep(0.5)
+
+	def _on_pattern_set(self):
+		self.proxy.interception_pattern = self.footer.get_edit_text()
+		self.view.focus_position = 'body'
+
                         
 
-
 if __name__ == '__main__':
-        i = Interface()
+	serv_port = sys.argv[1] if len(sys.argv) > 1 else 50007
+        i = Interface(serv_port)
         i.start()
