@@ -20,6 +20,18 @@ Getting it to work
   * In the newly-created directory *sproxy_files* you can find the certificate file *sproxy.pem*. Import it in your browser as a trusted certificate authority.
   * The proxy will run on port 50007. Configure your browser to use the proxy and run *sprox.py*
   
+Screenshots
+===========
+Main screen, basic output mode
+![screenshot1](http://i62.tinypic.com/x6dbit.png "Screenshot 1")
+
+Main screen, full output mode
+![screenshot2](http://i59.tinypic.com/9adbfr.png "Screenshot 2")
+
+Event log screen
+![screenshot3](http://i59.tinypic.com/w9d4cw.png "Screenshot 3")
+
+  
 To do
 =====
   * Allow user to run proxy on desired port
