@@ -18,8 +18,8 @@ Getting it to work
   * Run *setup.py*. It will create the needed directories and create the self-signed SSL certificate. You may specify the local certificates file path (defaults to */etc/ssl/certs/ca-certificates.crt*) and the serial number of the self-signed certificate (defaults to 1).
   `python setup.py [localcert] [serial]`
   * In the newly-created directory *sproxy_files* you can find the certificate file *sproxy.pem*. Import it in your browser as a trusted certificate authority.
-  * Configure your browser to use the proxy and run *sprox.py*. You can specify the port in the command-line arguments (defaults to 50007.
-  `python sprox.py [port`
+  * Configure your browser to use the proxy and run *sprox.py*. You can specify the port in the command-line arguments (defaults to 50007).
+  `python sprox.py [port]`
   
 Screenshots
 ===========
