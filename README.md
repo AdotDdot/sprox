@@ -36,5 +36,4 @@ To do
 =====
   * Allow user to run proxy on desired port
   * Allow user to intercept and modify requests on the fly
-  * Allow user to blacklist hosts on the fly
   * Allow user to modify set timeouts on the fly
