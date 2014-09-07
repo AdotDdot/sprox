@@ -7,7 +7,7 @@ sprox is based on [sproxy](https://github.com/AdotDdot/sproxy), but features a c
 
 Features
 =======
-  * Generate https certificates on the fly to allow https interception
+  * Generate ssl certificates on the fly to allow https interception
   * Display requests and responses - you can display them either in basic mode, displaying only the first line of each request and response, or in full mode, displaying the full request and the head of the response.
   * Events log: displays error messages events relative to major socket events
   * Automatically decode url-encoded POST data
@@ -35,5 +35,5 @@ Event log screen
   
 To do
 =====
-  * Allow user to intercept and modify requests on the fly
+  * Allow user to intercept and modify requests on the fly [work in progress]
   * Allow user to modify set timeouts on the fly
