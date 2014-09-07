@@ -238,7 +238,7 @@ class Proxy:
 		self.modify_all(request)
 		request.whole = request.make_raw()
 		#block requests that match interception pattern to allow user changes
-		if self._matches_interception_pattern(request.first_line):
+		if self._matches_interception_pattern(request):
 			request.on_hold = True
 			self.intercepted_queue.append(request)
 		#TODO
