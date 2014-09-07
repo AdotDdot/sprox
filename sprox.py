@@ -20,7 +20,7 @@ import sys
 import threading
 import ssl
 import os
-import re
+import argparse
 import time
 import urwid
 import urlparse
@@ -43,7 +43,7 @@ class Proxy:
                 self.eventlog_queue = []
 		self.intercepted_queue = []
                 self.output_mode = 'b'
-		self.interception_pattern = None
+		self.interception_pattern = {'method':'', 'url':''}
 
 
 	def modify_all(self, request):
@@ -98,7 +98,7 @@ class Proxy:
 		#process request to allow for user changes
 		request_obj = HTTPRequest(request)
 		self._handle_reqs(request_obj)
-		request = request_obj.make_raw()
+		request = request_obj.whole
 		tunneling = request_obj.method == 'CONNECT'
 		http_port = 443 if tunneling else 80
 		http_host = request_obj.headers['Host']
@@ -146,17 +146,17 @@ class Proxy:
 			wclient.close()
 			conn.close()	
 			sys.exit(1)	
-		request_obj = HTTPRequest(request)
+		request_obj = HTTPRequest(request, https=True)
 		self._handle_reqs(request_obj)
-		request = request_obj.make_raw()
+		request = request_obj.whole
 		wclient.send(request)
 		try: 
 			response = self._recv_pipe(host, wclient, conn)
 			if response: 
 				response_obj = HTTPResponse(response)
-				self._handle_response(request_obj, response_obj, host, https = True)
-		except ssl.SSLError, m: self._log(cname, '%s'%m) #watch
-		except socket.error, (v, m): self._log(cname, host+ ' - Error '+str(v)+' '+m) #watch
+				self._handle_response(request_obj, response_obj, host)
+		except ssl.SSLError, m: self._log(cname, '%s'%m) #fix
+		except socket.error, (v, m): self._log(cname, host+ ' - Error '+str(v)+' '+m) #fix
 		finally:
 			wclient.close()
 			conn.close()
@@ -167,8 +167,7 @@ class Proxy:
 		self._log(cname, 'client to host %s initialized'%host)
 		wclient.settimeout(self.web_timeout)
 		try:
-			hostip = socket.gethostbyname(host)
-			wclient.connect((hostip, port))
+			wclient.connect((host, port))
 			self._log(cname, 'client to host %s connected'%host)
 		except socket.timeout:
 			self._log(cname, ('err', 'could not connect to %s: socket timed out'%host))
@@ -225,30 +224,35 @@ class Proxy:
 	def _log(self, cname, content):
                 self.eventlog_queue.append(['%f  '%time.time(), ('[%s %d]'%cname).ljust(25), content]) 
 
-	def _matches_interception_pattern(self, firstline):
+	def _matches_interception_pattern(self, request):
 		'''Check if request matches intercepting pattern'''
-		return False #TODO still not implemented
+		int_met = self.interception_pattern['method']
+		int_url = self.interception_pattern['url']
+		#TODO add 
+		if (not int_met and not int_url) or (int_met and int_met not in request.method) or (int_url and int_url not in request.url): return False
+		return True
 
 	def _handle_reqs(self, request):
 		'''Apply changes to incoming requests'''
 		#apply permanent changes
 		self.modify_all(request)
+		request.whole = request.make_raw()
 		#block requests that match interception pattern to allow user changes
 		if self._matches_interception_pattern(request.first_line):
 			request.on_hold = True
 			self.intercepted_queue.append(request)
-		while request.on_hold: #TODO 
-			time.sleep(1)
+		#TODO
+		'''
+		while request.on_hold: 
+			time.sleep(1)'''
 		       
-	def _handle_response(self, request, response, host, https = False):
+	def _handle_response(self, request, response, host):
 		'''After response has been received'''
-                self._output_flow(request, response, host, https)
+                self._output_flow(request, response)
                 self.parse_response(response, host)
 
-        def _output_flow(self, request, response, host, https):
+        def _output_flow(self, request, response):
 		'''Output request and response'''
-                #url to display
-                url = 'https://'+host+request.url if https else request.url
                 #set palette attr for request method
                 if request.method == 'GET':
                         metcol = 'bblue'
@@ -271,11 +275,11 @@ class Proxy:
                 if self.output_mode == 'b':
                         clength = response.headers['Content-Length']+' bytes' if 'Content-Length' in response.headers else ''
 		        ctype = response.headers['Content-Type'] if 'Content-Type' in response.headers else ''
-                        out = ['\n', (metcol, request.method), ' ', url, ' ', request.protov, '\n    ',
+                        out = ['\n', (metcol, request.method), ' ', request.url, ' ', request.protov, '\n    ',
                                 response.protov, ' ', (statcol, '%s %s'%(response.status, response.status_text)), ' %s %s'%(clength, ctype)]
 		#output in full mode
                 elif self.output_mode == 'f':
-                        out = ['\n\n', (metcol, request.method), ' ', url, ' ', request.protov, request.head.replace(request.first_line, '')]
+                        out = ['\n\n', (metcol, request.method), ' ', request.url, ' ', request.protov, request.head.replace(request.first_line, '')]
                         if request.method == 'POST':
                                 if 'Content-Type' in request.headers and 'application/x-www-form-urlencoded' in request.headers['Content-Type']:
                                         out.append(('pyellow', '\n'.join(['\nUrl-encoded form:']+[': '.join(t) for t in urlparse.parse_qsl(request.body.strip('\n'))])))
@@ -289,7 +293,8 @@ class Proxy:
 
 
 class HTTPRequest:
-	def __init__(self, raw_req):
+	def __init__(self, raw_req, https = False):
+		self.https = https
 		self.on_hold = False
 		self.whole = raw_req.replace('\r', '\n').replace('\n\n', '\n')
 		self._set_parts()
@@ -299,6 +304,7 @@ class HTTPRequest:
 		self.first_line = str(self.head).splitlines()[0]
 		self.headers = HeaderDict([x.split(': ', 1) for x in self.head.splitlines()[1:]])
                 self.method, self.url, self.protov = self.first_line.split(' ', 2)
+		if self.https: self.url = 'https://'+self.headers['host']+self.url
 
 	def set_header(self, header, value):
 		self.headers[header] = value
@@ -413,6 +419,7 @@ class Interface:
 		]
 
 	def __init__(self, serv_port):
+		self._init_iparser()
 		self.header = urwid.AttrWrap(urwid.Text(self.header_text), 'ext')
                 self.footer = EEdit("  Current interception pattern: ")
 		self.flowWalker = urwid.SimpleListWalker([])
@@ -447,16 +454,21 @@ class Interface:
                 #set output preference		
                 elif k in ('B', 'b'):
                         self.proxy.output_mode = 'b'
-                        #self.footer.set_text('  Output: basic')
                 elif k in ('F', 'f'):
                         self.proxy.output_mode = 'f'
-                        #self.footer.set_text('  Output: full')
                 elif k in ('l', 'L'):
                         self.body.original_widget = self.eventlog
                 elif k in ('m', 'M'):
                         self.body.original_widget = self.mscreen
 		elif k in ('r', 'R'):
 			self.body.original_widget = self.reqEdit
+
+	def _init_iparser(self):
+		self.iparser = argparse.ArgumentParser()
+		self.iparser.add_argument('-m')
+		self.iparser.add_argument('-u')
+		#TODO add options for headers
+		self.correspondences = {'g':'GET', 'p':'POST', 'd':'DELETE', 't':'TRACE', 'u':'PUT', 'o':'OPTIONS'}
 
 	def _fill_screen(self):	
 		#infinite loop - check every 0.5s if there is something to output
@@ -475,10 +487,20 @@ class Interface:
 					self.loop.draw_screen()
 					self.eventlog.set_focus(len(self.logWalker)-1, 'above')
 				except AssertionError: pass
+			#TODO intercepted
                         time.sleep(0.5)
 
 	def _on_pattern_set(self):
-		self.proxy.interception_pattern = self.footer.get_edit_text()
+		#parse and set pattern
+		try:
+			opts = self.iparser.parse_args(self.footer.get_edit_text().split())
+			try:
+				self.proxy.interception_pattern['method'] = self.correspondences[opts.m]
+			except KeyError: self.proxy.interception_pattern['method'] = ''
+			self.proxy.interception_pattern['url'] = opts.u	
+		except: pass
+		#TODO add
+		#remove cursor
 		self.view.focus_position = 'body'
 
                         
