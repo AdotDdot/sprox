@@ -43,7 +43,7 @@ class Proxy:
                 self.eventlog_queue = []
 		self.intercepted_queue = []
                 self.output_mode = 'b'
-		self.interception_pattern = {'method':'', 'url':''}
+		self.interception_pattern = {'method':[], 'url':'', 'headers':[]}
 
 
 	def modify_all(self, request):
@@ -155,8 +155,8 @@ class Proxy:
 			if response: 
 				response_obj = HTTPResponse(response)
 				self._handle_response(request_obj, response_obj, host)
-		except ssl.SSLError, m: self._log(cname, '%s'%m) #fix
-		except socket.error, (v, m): self._log(cname, host+ ' - Error '+str(v)+' '+m) #fix
+		except ssl.SSLError, m: self._log(cname, '%s'%m) #TODO fix
+		except socket.error, (v, m): self._log(cname, host+ ' - Error '+str(v)+' '+m) #TODO fix
 		finally:
 			wclient.close()
 			conn.close()
@@ -199,18 +199,15 @@ class Proxy:
 				self._log(cname, 'ssl error occured while receiving data from %s: %s'%(source, m))
 				break
 			except socket.timeout:
-				#self._log(cname, 'socket timed out while receiving data: breaking receiving loop')
 				break
 			except socket.error, (v, m):
 				self._log(cname, 'socket error %d occurred while receiving data from %s - %s'%(v, source, m))
 				break
 			if not msg_pack:
 				if gotnull: 
-					#self._log(cname, 'end of data: breaking receiving loop') 
 					break
 				else: gotnull = 1
 			else:
-				#self._log('[%s %d]  got data packet of len %d'%(cname[0], cname[1], len(msg_pack)))
 				msg.append(msg_pack)
 				if to_conn:
 					try: to_conn.send(msg_pack)
@@ -228,8 +225,13 @@ class Proxy:
 		'''Check if request matches intercepting pattern'''
 		int_met = self.interception_pattern['method']
 		int_url = self.interception_pattern['url']
-		#TODO add 
-		if (not int_met and not int_url) or (int_met and int_met not in request.method) or (int_url and int_url not in request.url): return False
+		int_hdrs = self.interception_pattern['headers']
+		if (not int_met and not int_url and not int_hdrs) or (int_met and request.method not in int_met) or (int_url and int_url not in request.url): return False
+		elif int_hdrs: 
+			for (k, v) in int_hdrs:
+				try: 
+					if v.lower() not in request.headers[k].lower(): return False #TODO watch case 
+				except KeyError: continue
 		return True
 
 	def _handle_reqs(self, request):
@@ -241,9 +243,9 @@ class Proxy:
 		if self._matches_interception_pattern(request):
 			request.on_hold = True
 			self.intercepted_queue.append(request)
-		#TODO
+		#TODO block
 		'''
-		while request.on_hold: 
+		? while request.on_hold: 
 			time.sleep(1)'''
 		       
 	def _handle_response(self, request, response, host):
@@ -275,9 +277,10 @@ class Proxy:
                 if self.output_mode == 'b':
                         clength = response.headers['Content-Length']+' bytes' if 'Content-Length' in response.headers else ''
 		        ctype = response.headers['Content-Type'] if 'Content-Type' in response.headers else ''
-                        out = ['\n', (metcol, request.method), ' ', request.url, ' ', request.protov, '\n    ',
+		        out = ['\n', (metcol, request.method), ' ', request.url, ' ', request.protov, '\n    ',
                                 response.protov, ' ', (statcol, '%s %s'%(response.status, response.status_text)), ' %s %s'%(clength, ctype)]
 		#output in full mode
+		#TODO improve output
                 elif self.output_mode == 'f':
                         out = ['\n\n', (metcol, request.method), ' ', request.url, ' ', request.protov, request.head.replace(request.first_line, '')]
                         if request.method == 'POST':
@@ -437,6 +440,7 @@ class Interface:
 		self.loop = urwid.MainLoop(self.view, self.palette, 
 			unhandled_input = self.unhandled_input)
                 self.proxy = Proxy(serv_port)
+		#TODO widget to edit requests
 
 	def start(self):
 		t = threading.Thread(target = self._fill_screen)
@@ -456,6 +460,7 @@ class Interface:
                         self.proxy.output_mode = 'b'
                 elif k in ('F', 'f'):
                         self.proxy.output_mode = 'f'
+		#switch between screens
                 elif k in ('l', 'L'):
                         self.body.original_widget = self.eventlog
                 elif k in ('m', 'M'):
@@ -465,10 +470,16 @@ class Interface:
 
 	def _init_iparser(self):
 		self.iparser = argparse.ArgumentParser()
-		self.iparser.add_argument('-m')
+		self.iparser.add_argument('-m', nargs='*')
 		self.iparser.add_argument('-u')
-		#TODO add options for headers
-		self.correspondences = {'g':'GET', 'p':'POST', 'd':'DELETE', 't':'TRACE', 'u':'PUT', 'o':'OPTIONS'}
+		self.iparser.add_argument('-e', type=self._header_type, nargs='*')
+		self.correspondences = {'g':'GET', 'p':'POST', 'd':'DELETE', 't':'TRACE', 'u':'PUT', 'o':'OPTIONS', 'h':'HEAD'}
+
+	def _header_type(self, s):
+		try: 
+			k, v = s.split('=')
+			return (k, v)
+		except: raise argparse.ArgumentTypeError("")
 
 	def _fill_screen(self):	
 		#infinite loop - check every 0.5s if there is something to output
@@ -487,7 +498,7 @@ class Interface:
 					self.loop.draw_screen()
 					self.eventlog.set_focus(len(self.logWalker)-1, 'above')
 				except AssertionError: pass
-			#TODO intercepted
+			#TODO handle blocked requests
                         time.sleep(0.5)
 
 	def _on_pattern_set(self):
@@ -495,11 +506,12 @@ class Interface:
 		try:
 			opts = self.iparser.parse_args(self.footer.get_edit_text().split())
 			try:
-				self.proxy.interception_pattern['method'] = self.correspondences[opts.m]
-			except KeyError: self.proxy.interception_pattern['method'] = ''
+				self.proxy.interception_pattern['method'] = [self.correspondences[mt] for mt in opts.m]
+			except: self.proxy.interception_pattern['method'] = ''
 			self.proxy.interception_pattern['url'] = opts.u	
+			try: self.proxy.interception_pattern['headers'] = [couple for couple in opts.e]
+			except: self.proxy.interception_pattern['headers'] = [] 
 		except: pass
-		#TODO add
 		#remove cursor
 		self.view.focus_position = 'body'
 
