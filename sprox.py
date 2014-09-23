@@ -329,8 +329,9 @@ class HTTPRequest:
 		'''Used after a request has been altered in a request editor.
 		Reset all parts'''
 		head, body = editor_content.split('\n\n', 1)
-		self.whole = '\n\n'.join([head, self._reencode_body(body)])
-		self._set_parts()	
+		self.whole = '\n\n'.join([head, self._reencode_body(body)]) #temp whole
+		self._set_parts()
+		self.whole = self.make_raw() #definitive raw
 
 	def set_header(self, header, value):
 		self.headers[header] = value
