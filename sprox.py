@@ -33,7 +33,11 @@ try:
     from thread import get_ident as _get_ident
 except ImportError:
     from dummy_thread import get_ident as _get_ident
+#TODO remove
+import pickle
 
+testlist = []
+testfile = open('testfile.txt', 'wb')
 
 class Proxy:
 	def __init__(self, serv_port):
@@ -51,6 +55,7 @@ class Proxy:
 		self.intercepted_queue = []
                 self.output_mode = 'b'
 		self.interception_pattern = {'method':[], 'url':[], 'headers':[]}
+		#TEST TODO REMOVE
 
 
 	def modify_all(self, request):
@@ -183,6 +188,8 @@ class Proxy:
 			conn.close()
 			sys.exit(1)
 		wclient.send(req)
+		#TEST TODO remove
+		testlist.append(req)
 		self._log(cname, 'request sent to host %s'%host)
 		response = self._recv_pipe(host, wclient, conn)
 		if response:
@@ -233,7 +240,7 @@ class Proxy:
 		if (int_met and request.method not in int_met): return False
 		if int_url:
 			for pt in int_url: 
-				if pt not in request.url: return False
+				if pt not in request.display_url: return False
 		if int_hdrs: 
 			for (k, v) in int_hdrs:
 				try: 
@@ -283,7 +290,7 @@ class Proxy:
                 if self.output_mode == 'b':
                         clength = response.headers['Content-Length']+' bytes' if 'Content-Length' in response.headers else ''
 		        ctype = response.headers['Content-Type'] if 'Content-Type' in response.headers else ''
-			out = ['\n', (metcol, request.method), ' ', request.url, ' ', request.protov, '\n    ',
+			out = ['\n', (metcol, request.method), ' ', request.display_url, ' ', request.protov, '\n    ',
                                 response.protov, ' ', (statcol, '%s %s'%(response.status, response.status_text)), ' %s %s'%(clength, ctype)]
 		#output in full mode
                 elif self.output_mode == 'f':
@@ -307,8 +314,18 @@ class HTTPRequest:
                 self.head, self.body = self.whole.split('\n\n')
 		self.first_line = str(self.head).splitlines()[0]
 		self.headers = HeaderDict([x.split(': ', 1) for x in self.head.splitlines()[1:]])
-                self.method, self.url, self.protov = self.first_line.split(' ', 2)
-		if self.https: self.url = 'https://'+self.headers['host']+self.url
+                self.method, url, self.protov = self.first_line.split(' ', 2)
+		if self.https: 
+			self.display_url = 'https://'+self.headers['host']+url
+			self.url = url	
+		else:
+			self.display_url = url
+			parsed = urlparse.urlparse(url)
+			self.url = url.replace(parsed.scheme+'://'+parsed.netloc, '', 1)
+		self.first_line = self.first_line.replace(url, self.url, 1)
+		self.head = self.head.replace(url, self.url, 1)
+		self.whole = '\n\n'.join([self.head, self.body])
+
 
 	def _decode_body(self): 
 		if self.body and 'Content-Type' in self.headers and 'application/x-www-form-urlencoded' in self.headers['Content-Type']:
@@ -329,9 +346,8 @@ class HTTPRequest:
 		'''Used after a request has been altered in a request editor.
 		Reset all parts'''
 		head, body = editor_content.split('\n\n', 1)
-		self.whole = '\n\n'.join([head, self._reencode_body(body)]) #temp whole
+		self.whole = '\n\n'.join([head, self._reencode_body(body)]) 
 		self._set_parts()
-		self.whole = self.make_raw() #definitive raw
 
 	def set_header(self, header, value):
 		self.headers[header] = value
@@ -339,13 +355,10 @@ class HTTPRequest:
 		self.head = '\n'.join([self.first_line, headers])
 		
 	def make_raw(self):
-		#put all parts back together
-		parsed = urlparse.urlparse(self.url)
-		url = self.url.replace(parsed.scheme+'://'+parsed.netloc, '', 1)
-		first_line = ' '.join([self.method, url, self.protov])
+		first_line = ' '.join([self.method, self.url, self.protov])
 		headers = '\r\n'.join([header+': '+self.headers[header] for header in self.headers])
 		head = '\r\n'.join([first_line, headers]) 
-		return '\r\n\r\n'.join([head, self.body]) 
+		return '\r\n\r\n'.join([head, self.body])
 
 
 class HTTPResponse:
@@ -408,6 +421,8 @@ class CertFactory:
 
 	def cleanup(self):
 		#update count of last serial number used
+		pickle.dump(testlist, testfile)
+		testfile.close()
 		with open(self._sid, 'wt') as sid:
 			self._count_lock.acquire()
 			sid.write(str(self._count))
