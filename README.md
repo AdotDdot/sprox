@@ -1,17 +1,32 @@
 sprox
 =====
 Yet another http/https intercepting proxy featuring a console interface.
-
 There are already several complete intercepting proxies written in Python, such as **mitmproxy**.
+
 sprox is based on [sproxy](https://github.com/AdotDdot/sproxy), but features a console interface based on urwid.
 
 Features
 =======
   * Generate ssl certificates on the fly to allow https interception
-  * Display requests and responses - you can display them either in basic mode, displaying only the first line of each request and response, or in full mode, displaying the full request and the head of the response.
-  * Events log: displays error messages events relative to major socket events
+  * Intercept and edit requests on the fly
+  * Two output modes: display requests and responses either in basic mode (output the first line of each request and response) or in full mode (displaying the full request and the head of the response)
+  * Display log of major socket events
   * Automatically decode url-encoded POST data
   
+Screenshots
+===========
+Main screen, basic output mode
+![screenshot1](http://i58.tinypic.com/246jb5l.png "Screenshot 1")
+
+Main screen, full output mode
+![screenshot2](http://i60.tinypic.com/339n08w.png "Screenshot 2")
+
+Event log screen
+![screenshot3](http://i58.tinypic.com/2v7vt51.png "Screenshot 3")
+
+Request Editor
+![screenshot4](http://i59.tinypic.com/2whigjl.png "Screenshot 4")
+
 Getting it to work
 ==================
   * Make sure urwid is installed ([Installation instructions](https://github.com/wardi/urwid/wiki/Installation-instructions))
@@ -20,20 +35,28 @@ Getting it to work
   * In the newly-created directory *sproxy_files* you can find the certificate file *sproxy.pem*. Import it in your browser as a trusted certificate authority.
   * Configure your browser to use the proxy and run *sprox.py*. You can specify the port in the command-line arguments (defaults to 50007).
   `python sprox.py [port]`
-  
-Screenshots
-===========
-Main screen, basic output mode
-![screenshot1](http://i62.tinypic.com/x6dbit.png "Screenshot 1")
 
-Main screen, full output mode
-![screenshot2](http://i59.tinypic.com/9adbfr.png "Screenshot 2")
+Intercepting requests
+=====================
+Type the desired interception pattern in the bottom bar and press ENTER to start intercepting.
+Requests can be intercepted filtering methods, urls and headers content. The pattern to be set follows a command-line arguments syntax.
+ * **-m** filter methods. Allowed arguments are g (GET), p (POST), d (DELETE), t (TRACE), u (PUT), o (OPTIONS), h (HEAD), c (CONNECT)
+ * **-u** filter urls. The request will be intercepted if it contains all the -u arguments.
+ * **-e** filter headers content. The syntax to follow is header-name=header-content. The request will be intercepted if the header indicated as header-name has as value header-content.
 
-Event log screen
-![screenshot3](http://i59.tinypic.com/w9d4cw.png "Screenshot 3")
+Examples:
 
-  
+    -m p
+Intercept all POST requests.
+
+    -m g -u github
+Intercept GET requests whose url contains "github".
+
+    -m g p -u github session -e connection=keep-alive
+Intercept GET or POST requests whose url contains "github" and "session" and whose "Connection" header value = "Keep-alive".
+
+After a request has been intercepted, its first line will be displayed in bold red in the main screen. Press r to switch to the request editor and edit the request. Press ENTER to stop editing and forward request.
+
 To do
 =====
-  * Allow user to intercept and modify requests on the fly [work in progress]
   * Allow user to modify set timeouts on the fly
