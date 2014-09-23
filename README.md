@@ -60,3 +60,4 @@ After a request has been intercepted, its first line will be displayed in bold r
 To do
 =====
   * Allow user to modify set timeouts on the fly
+  * Fix url visualization
