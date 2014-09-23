@@ -53,7 +53,7 @@ Intercept all POST requests.
 Intercept GET requests whose url contains "github".
 
     -m g p -u github session -e connection=keep-alive
-Intercept GET or POST requests whose url contains "github" and "session" and whose "Connection" header value = "Keep-alive".
+Intercept GET or POST requests whose url contains "github" and "session" and whose "Connection" header value is "Keep-alive".
 
 After a request has been intercepted, its first line will be displayed in bold red in the main screen. Press r to switch to the request editor and edit the request. Press ENTER to stop editing and forward request.
 
