@@ -339,7 +339,9 @@ class HTTPRequest:
 		
 	def make_raw(self):
 		#put all parts back together
-		first_line = ' '.join([self.method, self.url, self.protov])
+		parsed = urlparse.urlparse(self.url)
+		url = self.url.replace(parsed.scheme+'://'+parsed.netloc, '', 1)
+		first_line = ' '.join([self.method, url, self.protov])
 		headers = '\r\n'.join([header+': '+self.headers[header] for header in self.headers])
 		head = '\r\n'.join([first_line, headers]) 
 		return '\r\n\r\n'.join([head, self.body]) 
