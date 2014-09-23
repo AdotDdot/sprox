@@ -24,26 +24,33 @@ import argparse
 import time
 import urwid
 import urlparse
+from urllib import urlencode
 from OpenSSL import crypto
-from codict import COD as HeaderDict
+from _abcoll import *
+from operator import eq as _eq
+from itertools import imap as _imap
+try:
+    from thread import get_ident as _get_ident
+except ImportError:
+    from dummy_thread import get_ident as _get_ident
+
 
 class Proxy:
 	def __init__(self, serv_port):
 		self.serv_host = ''
 		self.serv_port = serv_port
 		self.max_listen = 300
-		self.browser_timeout = 1
-		self.web_timeout = 1
+		self.browser_timeout = 0.5
+		self.web_timeout = 0.5
 		self.buffer_size = 4096
-		self.debug = False
-		self.stdout_lock = threading.Lock()
 		self._certfactory = CertFactory()
 		self._init_localcert()
+		#lists for output to the various screen of interface
                 self.mainscreen_queue = []
                 self.eventlog_queue = []
 		self.intercepted_queue = []
                 self.output_mode = 'b'
-		self.interception_pattern = {'method':[], 'url':'', 'headers':[]}
+		self.interception_pattern = {'method':[], 'url':[], 'headers':[]}
 
 
 	def modify_all(self, request):
@@ -150,16 +157,12 @@ class Proxy:
 		self._handle_reqs(request_obj)
 		request = request_obj.whole
 		wclient.send(request)
-		try: 
-			response = self._recv_pipe(host, wclient, conn)
-			if response: 
-				response_obj = HTTPResponse(response)
-				self._handle_response(request_obj, response_obj, host)
-		except ssl.SSLError, m: self._log(cname, '%s'%m) #TODO fix
-		except socket.error, (v, m): self._log(cname, host+ ' - Error '+str(v)+' '+m) #TODO fix
-		finally:
-			wclient.close()
-			conn.close()
+		response = self._recv_pipe(host, wclient, conn)
+		if response: 
+			response_obj = HTTPResponse(response)
+			self._handle_response(request_obj, response_obj, host)
+		wclient.close()
+		conn.close()
 		
 	def _get_http_resp(self, host, port, conn, req, req_obj):
                 cname = conn.getsockname()
@@ -226,27 +229,30 @@ class Proxy:
 		int_met = self.interception_pattern['method']
 		int_url = self.interception_pattern['url']
 		int_hdrs = self.interception_pattern['headers']
-		if (not int_met and not int_url and not int_hdrs) or (int_met and request.method not in int_met) or (int_url and int_url not in request.url): return False
-		elif int_hdrs: 
+		if not int_met and not int_url and not int_hdrs: return False
+		if (int_met and request.method not in int_met): return False
+		if int_url:
+			for pt in int_url: 
+				if pt not in request.url: return False
+		if int_hdrs: 
 			for (k, v) in int_hdrs:
 				try: 
-					if v.lower() not in request.headers[k].lower(): return False #TODO watch case 
+					if v.lower() not in request.headers[k].lower(): return False
 				except KeyError: continue
 		return True
 
 	def _handle_reqs(self, request):
 		'''Apply changes to incoming requests'''
-		#apply permanent changes
+		#apply all-requests changes
 		self.modify_all(request)
 		request.whole = request.make_raw()
 		#block requests that match interception pattern to allow user changes
 		if self._matches_interception_pattern(request):
 			request.on_hold = True
 			self.intercepted_queue.append(request)
-		#TODO block
-		'''
-		? while request.on_hold: 
-			time.sleep(1)'''
+			self.mainscreen_queue.append(('bred', '\n'+request.first_line))
+		while request.on_hold: 
+			time.sleep(1)
 		       
 	def _handle_response(self, request, response, host):
 		'''After response has been received'''
@@ -277,22 +283,16 @@ class Proxy:
                 if self.output_mode == 'b':
                         clength = response.headers['Content-Length']+' bytes' if 'Content-Length' in response.headers else ''
 		        ctype = response.headers['Content-Type'] if 'Content-Type' in response.headers else ''
-		        out = ['\n', (metcol, request.method), ' ', request.url, ' ', request.protov, '\n    ',
+			out = ['\n', (metcol, request.method), ' ', request.url, ' ', request.protov, '\n    ',
                                 response.protov, ' ', (statcol, '%s %s'%(response.status, response.status_text)), ' %s %s'%(clength, ctype)]
 		#output in full mode
-		#TODO improve output
                 elif self.output_mode == 'f':
                         out = ['\n\n', (metcol, request.method), ' ', request.url, ' ', request.protov, request.head.replace(request.first_line, '')]
-                        if request.method == 'POST':
-                                if 'Content-Type' in request.headers and 'application/x-www-form-urlencoded' in request.headers['Content-Type']:
-                                        out.append(('pyellow', '\n'.join(['\nUrl-encoded form:']+[': '.join(t) for t in urlparse.parse_qsl(request.body.strip('\n'))])))
-                                else: 
-                                        out.append(('pyellow', '\nPost data:\n%s'%request.body))
+                        if request.body:
+				out.append(('pyellow', request.decoded_body))
                         out.append(('body', '\n\n'+response.head.replace('\r', '\n').replace('\n\n', '\n')))
 		#append to queue
-                self.stdout_lock.acquire() #TODO remove lock if unnecessary
-                self.mainscreen_queue.append(out)
-                self.stdout_lock.release()                            
+                self.mainscreen_queue.append(out)                        
 
 
 class HTTPRequest:
@@ -301,6 +301,7 @@ class HTTPRequest:
 		self.on_hold = False
 		self.whole = raw_req.replace('\r', '\n').replace('\n\n', '\n')
 		self._set_parts()
+		self._decode_body()
 
 	def _set_parts(self):
                 self.head, self.body = self.whole.split('\n\n')
@@ -308,6 +309,28 @@ class HTTPRequest:
 		self.headers = HeaderDict([x.split(': ', 1) for x in self.head.splitlines()[1:]])
                 self.method, self.url, self.protov = self.first_line.split(' ', 2)
 		if self.https: self.url = 'https://'+self.headers['host']+self.url
+
+	def _decode_body(self): 
+		if self.body and 'Content-Type' in self.headers and 'application/x-www-form-urlencoded' in self.headers['Content-Type']:
+				self.decoded_body = '\n'.join(['[Url-encoded]']+[': '.join(t) for t in urlparse.parse_qsl(self.body.strip('\n'))])
+				self._body_decoded = True
+		else:
+			self.decoded_body = self.body
+			self._body_decoded = False
+
+	def _reencode_body(self, new_body):
+		'''Used after the body of a request has been altered in a request editor. 
+		If the body displayed had been decoded, it is encoded, else it is left as it is'''
+		if not self._body_decoded: return new_body
+		else:
+			return urlencode([tuple(x.split(': ', 1)) for x in new_body.splitlines()[1:]])
+
+	def reset_request(self, editor_content):
+		'''Used after a request has been altered in a request editor.
+		Reset all parts'''
+		head, body = editor_content.split('\n\n', 1)
+		self.whole = '\n\n'.join([head, self._reencode_body(body)])
+		self._set_parts()	
 
 	def set_header(self, header, value):
 		self.headers[header] = value
@@ -387,14 +410,177 @@ class CertFactory:
 			sid.write(str(self._count))
 			self._count_lock.release()
 
-################################################################ urwid - possibly make these into another file?
+
+class HeaderDict(dict):
+    '''Caseless Ordered Dictionary
+    Enables case insensitive searching and updating while preserving case sensitivity when keys are listed.
+    Combination of the code of collections.OrderedDict and CaselessDictionary (https://gist.github.com/bloomonkey/3003096) '''
+    
+    def __init__(self, *args, **kwds):
+        if len(args) > 1:
+            raise TypeError('expected at most 1 arguments, got %d' % len(args))
+        try:
+            self.__root
+        except AttributeError:
+            self.__root = root = []                   
+            root[:] = [root, root, None]
+            self.__map = {}
+        self.__update(*args, **kwds)
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key.lower())
+  
+    def __getitem__(self, key):
+        return dict.__getitem__(self, key.lower())['val'] 
+
+    def __setitem__(self, key, value, dict_setitem=dict.__setitem__):
+        if key not in self:
+            root = self.__root
+            last = root[0]
+            last[1] = root[0] = self.__map[key] = [last, root, key]
+        return dict.__setitem__(self, key.lower(), {'key': key, 'val': value})
+
+    def __delitem__(self, key, dict_delitem=dict.__delitem__):
+        dict_delitem(self, key)
+        link_prev, link_next, _ = self.__map.pop(key)
+        link_prev[1] = link_next                        
+        link_next[0] = link_prev                       
+
+    def __iter__(self):
+        root = self.__root
+        curr = root[1]                                  
+        while curr is not root:
+            yield curr[2]                              
+            curr = curr[1]                         
+
+    def __reversed__(self):
+        root = self.__root
+        curr = root[0]                                
+        while curr is not root:
+            yield curr[2]                             
+            curr = curr[0]                       
+
+    def clear(self):
+        root = self.__root
+        root[:] = [root, root, None]
+        self.__map.clear()
+        dict.clear(self)
+
+    def keys(self):
+        return list(self)
+
+    def values(self):
+        return [self[key] for key in self]
+
+    def items(self):
+        return [(key, self[key]) for key in self]
+
+    def iterkeys(self):
+        return iter(self)
+
+    def itervalues(self):
+        for k in self:
+            yield self[k]
+
+    def iteritems(self):
+        for k in self:
+            yield (k, self[k])
+
+    def get(self, key, default=None):
+        try:
+            v = dict.__getitem__(self, key.lower())
+        except KeyError:
+            return default
+        else:
+            return v['val']
+
+    def has_key(self,key):
+        return key in self
+
+    update = MutableMapping.update
+
+    __update = update 
+
+    __marker = object()
+
+    def pop(self, key, default=__marker):
+        if key in self:
+            result = self[key]
+            del self[key]
+            return result
+        if default is self.__marker:
+            raise KeyError(key)
+        return default
+
+    def setdefault(self, key, default=None):
+        if key in self:
+            return self[key]
+        self[key] = default
+        return default
+
+    def popitem(self, last=True):
+        if not self:
+            raise KeyError('dictionary is empty')
+        key = next(reversed(self) if last else iter(self))
+        value = self.pop(key)
+        return key, value
+
+    def __repr__(self, _repr_running={}):
+        call_key = id(self), _get_ident()
+        if call_key in _repr_running:
+            return '...'
+        _repr_running[call_key] = 1
+        try:
+            if not self:
+                return '%s()' % (self.__class__.__name__,)
+            return '%s(%r)' % (self.__class__.__name__, self.items())
+        finally:
+            del _repr_running[call_key]
+
+    def __reduce__(self):
+        items = [[k, self[k]] for k in self]
+        inst_dict = vars(self).copy()
+        for k in vars(OrderedDict()):
+            inst_dict.pop(k, None)
+        if inst_dict:
+            return (self.__class__, (items,), inst_dict)
+        return self.__class__, (items,)
+
+    def copy(self):
+        return self.__class__(self)
+
+    @classmethod
+    def fromkeys(cls, iterable, value=None):
+        self = cls()
+        for key in iterable:
+            self[key] = value
+        return self
+
+    def __eq__(self, other):
+        if isinstance(other, OrderedDict):
+            return dict.__eq__(self, other) and all(_imap(_eq, self, other))
+        return dict.__eq__(self, other)
+
+    def __ne__(self, other):
+        return not self == other
+
+    def viewkeys(self):
+        return KeysView(self)
+
+    def viewvalues(self):
+        return ValuesView(self)
+
+    def viewitems(self):
+        return ItemsView(self)
+
+################################################################ urwid 
 
 class EEdit(urwid.Edit):
 	'''An Edit widget that emits a custom signal on enter'''
 	def keypress(self, size, key):
 		if key == 'enter': 
 			urwid.emit_signal(self, 'done')
-		urwid.Edit.keypress(self, size, key)
+		urwid.Edit.keypress(self, size, key) 
 	
 class Interface:
 	palette = [
@@ -411,6 +597,7 @@ class Interface:
                 ('pyellow', 'yellow', 'black'),
                 ('pmagenta', 'dark magenta', 'black'),
                 ('err', 'light red', 'black'),
+		('bred', 'light red, bold', 'black'),
 		]
 
 	header_text = [
@@ -418,7 +605,8 @@ class Interface:
 		('ext_hi', 'UP'), ',', ('ext_hi', 'DOWN'), ':scroll        ',
                 ('ext_hi', 'b'), ',', ('ext_hi', 'f'), ':output mode        ',
                 ('ext_hi', 'l'), ':event log        ',
-                ('ext_hi', 'm'), ':main screen'          
+                ('ext_hi', 'm'), ':main screen        ',
+		('ext_hi', 'r'), ':request editor',          
 		]
 
 	def __init__(self, serv_port):
@@ -430,6 +618,8 @@ class Interface:
                 self.logWalker = urwid.SimpleListWalker([])
                 self.eventlog = urwid.ListBox(self.logWalker)
 		self.reqEdit = urwid.WidgetPlaceholder(urwid.Filler(urwid.Text(('ext', ' No requests intercepted yet '), align='center'), 'middle'))
+		self.reqEditor = EEdit("", multiline=False)
+		self.editor_locked = False
                 self.body = urwid.WidgetPlaceholder(self.mscreen)
 		self.view = urwid.Frame(
 			urwid.AttrWrap(self.body, 'body'),
@@ -437,10 +627,10 @@ class Interface:
 			footer = urwid.AttrWrap(self.footer, 'ext'))
 		urwid.register_signal(EEdit, ['done'])
 		urwid.connect_signal(self.footer, 'done', self._on_pattern_set)
+		urwid.connect_signal(self.reqEditor, 'done', self._on_req_modified)
 		self.loop = urwid.MainLoop(self.view, self.palette, 
 			unhandled_input = self.unhandled_input)
                 self.proxy = Proxy(serv_port)
-		#TODO widget to edit requests
 
 	def start(self):
 		t = threading.Thread(target = self._fill_screen)
@@ -471,9 +661,9 @@ class Interface:
 	def _init_iparser(self):
 		self.iparser = argparse.ArgumentParser()
 		self.iparser.add_argument('-m', nargs='*')
-		self.iparser.add_argument('-u')
+		self.iparser.add_argument('-u', nargs='*')
 		self.iparser.add_argument('-e', type=self._header_type, nargs='*')
-		self.correspondences = {'g':'GET', 'p':'POST', 'd':'DELETE', 't':'TRACE', 'u':'PUT', 'o':'OPTIONS', 'h':'HEAD'}
+		self.correspondences = {'g':'GET', 'p':'POST', 'd':'DELETE', 't':'TRACE', 'u':'PUT', 'o':'OPTIONS', 'h':'HEAD', 'c':'CONNECT'}
 
 	def _header_type(self, s):
 		try: 
@@ -498,8 +688,15 @@ class Interface:
 					self.loop.draw_screen()
 					self.eventlog.set_focus(len(self.logWalker)-1, 'above')
 				except AssertionError: pass
-			#TODO handle blocked requests
+			if self.proxy.intercepted_queue:
+				if not self.editor_locked:
+					self.editor_locked = True
+					request = self.proxy.intercepted_queue[0]
+					self.reqEditor.set_edit_text(request.head+'\n\n'+request.decoded_body)
+					self.reqEdit.original_widget = urwid.Filler(urwid.Padding(urwid.LineBox(self.reqEditor, title='Editing request:'), left=5, right=5), 'middle')
+					self.loop.draw_screen()	
                         time.sleep(0.5)
+					
 
 	def _on_pattern_set(self):
 		#parse and set pattern
@@ -507,15 +704,23 @@ class Interface:
 			opts = self.iparser.parse_args(self.footer.get_edit_text().split())
 			try:
 				self.proxy.interception_pattern['method'] = [self.correspondences[mt] for mt in opts.m]
-			except: self.proxy.interception_pattern['method'] = ''
+			except: self.proxy.interception_pattern['method'] = []
 			self.proxy.interception_pattern['url'] = opts.u	
-			try: self.proxy.interception_pattern['headers'] = [couple for couple in opts.e]
+			try: self.proxy.interception_pattern['headers'] = opts.e
 			except: self.proxy.interception_pattern['headers'] = [] 
 		except: pass
 		#remove cursor
 		self.view.focus_position = 'body'
 
-                        
+	def _on_req_modified(self):
+		request = self.proxy.intercepted_queue.pop(0)
+		#replace request attributes
+		request.reset_request(self.reqEditor.get_edit_text())
+		self.reqEdit.original_widget = urwid.Filler(urwid.Text(''), 'middle')
+		request.on_hold = False
+		self.editor_locked = False
+		self.view_focus_position = 'body'
+		                     
 
 if __name__ == '__main__':
 	serv_port = sys.argv[1] if len(sys.argv) > 1 else 50007
