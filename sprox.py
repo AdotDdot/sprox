@@ -33,11 +33,6 @@ try:
     from thread import get_ident as _get_ident
 except ImportError:
     from dummy_thread import get_ident as _get_ident
-#TODO remove
-import pickle
-
-testlist = []
-testfile = open('testfile.txt', 'wb')
 
 class Proxy:
 	def __init__(self, serv_port):
@@ -55,8 +50,6 @@ class Proxy:
 		self.intercepted_queue = []
                 self.output_mode = 'b'
 		self.interception_pattern = {'method':[], 'url':[], 'headers':[]}
-		#TEST TODO REMOVE
-
 
 	def modify_all(self, request):
 		'''Override to apply changes to every request'''
@@ -188,8 +181,6 @@ class Proxy:
 			conn.close()
 			sys.exit(1)
 		wclient.send(req)
-		#TEST TODO remove
-		testlist.append(req)
 		self._log(cname, 'request sent to host %s'%host)
 		response = self._recv_pipe(host, wclient, conn)
 		if response:
@@ -421,8 +412,6 @@ class CertFactory:
 
 	def cleanup(self):
 		#update count of last serial number used
-		pickle.dump(testlist, testfile)
-		testfile.close()
 		with open(self._sid, 'wt') as sid:
 			self._count_lock.acquire()
 			sid.write(str(self._count))
