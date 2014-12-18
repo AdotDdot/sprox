@@ -241,8 +241,12 @@ class Proxy:
 
 	def _handle_reqs(self, request):
 		'''Apply changes to incoming requests'''
-		#apply all-requests changes
+		#decrease no of max-forward
+		if "Max-Forward" in request.headers:
+			request.headers["Max-Forwards"] = str(int(request.headers["Max-Forwards"])-1)
+		#apply user-defined changes
 		self.modify_all(request)
+		#apply changes to raw data
 		request.whole = request.make_raw()
 		#block requests that match interception pattern to allow user changes
 		if self._matches_interception_pattern(request):
