@@ -71,4 +71,4 @@ Use the *launch* function to start sprox with a custom proxy class. It takes as 
 To do
 =====
   * Allow user to modify set timeouts on the fly
-  * Improve request editing
+  * Improve requests editing
