@@ -620,7 +620,7 @@ class Interface:
 		('ext_hi', 'r'), ':request editor',          
 		]
 
-	def __init__(self, serv_port):
+	def __init__(self, serv_port, custom_proxy_class = None ):
 		self._init_iparser()
 		self.header = urwid.AttrWrap(urwid.Text(self.header_text), 'ext')
                 self.footer = EEdit("  Current interception pattern: ")
@@ -641,7 +641,8 @@ class Interface:
 		urwid.connect_signal(self.reqEditor, 'done', self._on_req_modified)
 		self.loop = urwid.MainLoop(self.view, self.palette, 
 			unhandled_input = self.unhandled_input)
-                self.proxy = Proxy(serv_port)
+		if custom_proxy_class: self.proxy = custom_proxy_class(serv_port)	
+                else: self.proxy = Proxy(serv_port)
 
 	def start(self):
 		t = threading.Thread(target = self._fill_screen)
@@ -732,8 +733,11 @@ class Interface:
 		self.editor_locked = False
 		self.view_focus_position = 'body'
 		                     
+def launch(serv_port = 50007, custom_proxy_class = None):
+	interface = Interface(serv_port, custom_proxy_class)
+	interface.start()
 
 if __name__ == '__main__':
 	serv_port = sys.argv[1] if len(sys.argv) > 1 else 50007
-        i = Interface(serv_port)
+        launch(serv_port)
         i.start()
