@@ -57,6 +57,17 @@ Intercept GET or POST requests whose url contains "github" and "session" and who
 
 After a request has been intercepted, its first line will be displayed in bold red in the main screen. Press r to switch to the request editor and edit the request. Press ENTER to stop editing and forward request.
 
+Using custom proxy classes
+====================================
+Use the *launch* function to start sprox with a custom proxy class. It takes as arguments the port number and the custom proxy class. Both are keyword arguments - if unspecified, serv_port defaults to 50007 and custom_proxy_class defaults to None.
+
+    from sprox import Proxy, launch
+    
+    class MyProxy(Proxy):
+        ... #custom code
+    
+    launch(serv_port = 100000002, custom_proxy_class = MyProxy) #if not specified port defaults to 50007
+
 To do
 =====
   * Allow user to modify set timeouts on the fly
