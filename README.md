@@ -72,3 +72,4 @@ To do
 =====
   * Allow user to modify set timeouts on the fly
   * Improve requests editing
+  * Lots of crap to fix
